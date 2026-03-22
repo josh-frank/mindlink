@@ -635,38 +635,40 @@
     const stText = document.getElementById('status-text');
 
     function connect() {
-        const ws = new WebSocket(`ws://${location.hostname}:5001`);
+      const ws = new WebSocket(`ws://${location.hostname}:5001`);
 
-        ws.onopen = () => {
-          dot.classList.add('live');
-          stText.textContent = 'live';
-        };
+      ws.onopen = () => {
+        dot.classList.add('live');
+        stText.textContent = 'live';
+      };
 
-        ws.onclose = () => {
-          dot.classList.remove('live');
-          stText.textContent = 'reconnecting…';
-          setTimeout(connect, 2000);
-        };
+      ws.onclose = () => {
+        dot.classList.remove('live');
+        stText.textContent = 'reconnecting…';
+        setTimeout(connect, 2000);
+      };
 
-        ws.onmessage = ({ data }) => {
-          const f = JSON.parse(data);
+      ws.onmessage = ({ data }) => {
+        const f = JSON.parse(data);
 
-          // delta-based mapping — works regardless of absolute µS baseline
-          const sensitivity = 20 / sensKnob.getValue();  // knob 1-16, higher = more sensitive
-          const taOffset = (taKnob.getValue() - 2.0) * 0.1;
-          let norm = 0.5 + taOffset + (f.delta / sensitivity) * 0.5;
-          norm = Math.max(0, Math.min(1, norm));
-          setNeedle(norm);
+        // sensitivity knob: 1-16, higher = more sensitive
+        const sensitivity = 20 / sensKnob.getValue();
+        // tone arm knob: offsets center (2.0 = center)
+        const taOffset = (taKnob.getValue() - 2.0) * 0.1;
 
-          // readouts
-          document.getElementById('r-us').textContent = f.smooth_uS.toFixed(2);
-          document.getElementById('r-delta').textContent = f.delta;
-          document.getElementById('r-ta').textContent = f.ta.toFixed(2);
-          document.getElementById('r-warmed').textContent = f.warmed ? '✓' : '…';
+        let norm = 0.5 + taOffset + (f.delta / sensitivity) * 0.5;
+        norm = Math.max(0, Math.min(1, norm));
+        setNeedle(norm);
 
-          updatePolygram(f.smooth_uS);
-        };
-      }
+        // readouts
+        document.getElementById('r-us').textContent = f.smooth_uS.toFixed(2);
+        document.getElementById('r-delta').textContent = f.delta;
+        document.getElementById('r-ta').textContent = f.ta.toFixed(2);
+        document.getElementById('r-warmed').textContent = f.warmed ? '✓' : '…';
+
+        updatePolygram(f.smooth_uS);
+      };
+    }
 
     connect();
   </script>
