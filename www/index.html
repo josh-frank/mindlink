@@ -660,8 +660,8 @@
         const sensMul = Math.pow(sens / 8, 1.5);
         let norm = ((f.smooth_uS + baselineAdj) * sensMul);
 
-        // map µS to 0..1 across a reasonable range (1–10 µS)
-        norm = (norm - 1) / (10 - 1);
+        // map µS to 0..1 across a reasonable range (10–30 µS)
+        norm = (norm - 10) / (30 - 10);
         norm = Math.max(0, Math.min(1, norm));
         setNeedle(norm);
 
