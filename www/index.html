@@ -247,11 +247,10 @@
         <svg id="meter-svg" viewBox="-45 -30 90 60" style="width:100%;height:100%" preserveAspectRatio="xMidYMid meet">
           <defs id="label-paths"></defs>
           <g id="scale-group"></g>
-          <!-- <path id="needle" d="m -0.8 0 l 0.8 -28 l -0.8 0 z" fill="var(--red)"
+          <!-- <path id="needle" d="m -0.8 0 l 0.8 -30 l -0.8 0 z" fill="var(--red)"
             style="transform-origin:0 0;transform:rotate(-90deg)" /> -->
-          <line id="needle" x1="0" y1="0" x2="-28" y2="0" stroke="var(--red)" stroke-width="0.5"
-            style="transform-origin:0 0;transform:rotate(90deg)" />
-          <circle cx="0" cy="-28" r="1.2" fill="var(--red)" id="needle-tip"
+          <line id="needle" x1="-30" y1="0" x2="0" y2="0" stroke="var(--red)" stroke-width="0.5" />
+          <circle cx="0" cy="-30" r="1.2" fill="var(--red)" id="needle-tip"
             style="transform-origin:0 0;transform:rotate(-90deg)" />
           <circle cx="0" cy="0" r="2" fill="#2c3e50" />
         </svg>
@@ -262,7 +261,7 @@
         <div class="knob-wrap">
           <svg id="ta-knob" class="knob-svg" viewBox="0 0 16 16" touch-action="none"></svg>
           <div class="knob-label">Tone Arm</div>
-          <div class="knob-val" id="ta-val">2.0</div>
+          <div class="knob-val" id="ta-val">0.50</div>
         </div>
         <div class="knob-wrap">
           <svg id="sens-knob" class="knob-svg" viewBox="0 0 16 16" touch-action="none"></svg>
@@ -536,17 +535,18 @@
     }
 
     // ── live knob state (read by ws.onmessage) ────────────────────────────────
-    let toneArm = 2.0;   // multiplier on TA accumulator  (1.0 – 3.5)
+    let toneArm = 0.5;   // needle center offset  (0.0 – 1.0, default = midpoint)
     let sensitivity = 8;    // delta divisor for needle norm  (1 – 16)
 
-    // tone arm: 1.0 – 3.5
-    // Higher = more weight given to cumulative TA in needle deflection
+    // tone arm: 0.0 – 1.0
+    // Shifts the needle's centre point so the operator can re-centre
+    // a drifting needle without touching sensitivity — classic e-meter / polygraph behavior.
     const taKnob = makeKnob(document.getElementById('ta-knob'), {
-      min: 1.0, max: 3.5, value: toneArm,
+      min: 0.0, max: 1.0, value: toneArm,
       startAngle: -140, endAngle: 140, numMarks: 15,
       onchange: v => {
         toneArm = v;
-        document.getElementById('ta-val').textContent = v.toFixed(1);
+        document.getElementById('ta-val').textContent = v.toFixed(2);
       }
     });
 
@@ -666,18 +666,15 @@
 
         // Sensitivity knob: controls how aggressively delta deflects the needle.
         // Low sensitivity value = needle swings hard on small deltas.
-        // norm 0.5 = centre (baseline).  delta/sensitivity maps ±range → ±0.5
-        let norm = 0.5 + (f.delta / sensitivity) * 0.5;
+        // Tone Arm knob: shifts the centre point of the needle window (0.0–1.0).
+        // Operator turns it to re-centre a drifting needle — classic e-meter behavior.
+        let norm = toneArm + (f.delta / sensitivity) * 0.5;
         norm = Math.max(0, Math.min(1, norm));
         setNeedle(norm);
 
-        // Tone Arm knob: scales the server's cumulative TA accumulator.
-        // Higher toneArm value amplifies the displayed TA reading.
-        const scaledTA = f.ta * toneArm;
-
         document.getElementById('r-us').textContent = f.smooth_uS.toFixed(2);
         document.getElementById('r-delta').textContent = f.delta;
-        document.getElementById('r-ta').textContent = scaledTA.toFixed(2);
+        document.getElementById('r-ta').textContent = toneArm.toFixed(2);
         document.getElementById('r-warmed').textContent = f.warmed ? '✓' : '…';
 
         updatePolygram(f.smooth_uS);
