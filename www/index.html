@@ -247,11 +247,10 @@
         <svg id="meter-svg" viewBox="-45 -30 90 60" style="width:100%;height:100%" preserveAspectRatio="xMidYMid meet">
           <defs id="label-paths"></defs>
           <g id="scale-group"></g>
-          <!--
-          <path id="needle" d="m -0.8 0 l 0.8 -28 l 0.8 0 z" fill="var(--red)"
+          <!-- <path id="needle" d="m -0.8 0 l 0.8 -28 l -0.8 0 z" fill="var(--red)"
+            style="transform-origin:0 0;transform:rotate(-90deg)" /> -->
+           <line id="needle" x1="0" y1="0" x2="-28" y2="0" stroke="var(--red)" stroke-width="0.5"
             style="transform-origin:0 0;transform:rotate(-90deg)" />
-          -->
-           <line id="needle" x1="0" y1="0" x2="-28" y2="0" stroke="var(--red)" stroke-width="0.2" />
           <circle cx="0" cy="-28" r="1.2" fill="var(--red)" id="needle-tip"
             style="transform-origin:0 0;transform:rotate(-90deg)" />
           <circle cx="0" cy="0" r="2" fill="#2c3e50" />
@@ -637,43 +636,37 @@
     const stText = document.getElementById('status-text');
 
     function connect() {
-      const ws = new WebSocket(`ws://${location.hostname}:5001`);
+        const ws = new WebSocket(`ws://${location.hostname}:5001`);
 
-      ws.onopen = () => {
-        dot.classList.add('live');
-        stText.textContent = 'live';
-      };
+        ws.onopen = () => {
+          dot.classList.add('live');
+          stText.textContent = 'live';
+        };
 
-      ws.onclose = () => {
-        dot.classList.remove('live');
-        stText.textContent = 'reconnecting…';
-        setTimeout(connect, 2000);
-      };
+        ws.onclose = () => {
+          dot.classList.remove('live');
+          stText.textContent = 'reconnecting…';
+          setTimeout(connect, 2000);
+        };
 
-      ws.onmessage = ({ data }) => {
-        const f = JSON.parse(data);
+        ws.onmessage = ({ data }) => {
+          const f = JSON.parse(data);
 
-        // tone arm + sensitivity adjustment
-        const ta = taKnob.getValue();
-        const sens = sensKnob.getValue();
-        const baselineAdj = (ta - 2.0) * 10;
-        const sensMul = Math.pow(sens / 8, 1.5);
-        let norm = ((f.smooth_uS + baselineAdj) * sensMul);
+          // delta-based mapping — works regardless of absolute µS baseline
+          const sensitivity = 5;  // tune this: lower = more sensitive
+          let norm = 0.5 + (f.delta / sensitivity) * 0.5;
+          norm = Math.max(0, Math.min(1, norm));
+          setNeedle(norm);
 
-        // map µS to 0..1 across a reasonable range (1–10 µS)
-        norm = (norm - 1) / (10 - 1);
-        norm = Math.max(0, Math.min(1, norm));
-        setNeedle(norm);
+          // readouts
+          document.getElementById('r-us').textContent = f.smooth_uS.toFixed(2);
+          document.getElementById('r-delta').textContent = f.delta;
+          document.getElementById('r-ta').textContent = f.ta.toFixed(2);
+          document.getElementById('r-warmed').textContent = f.warmed ? '✓' : '…';
 
-        // readouts
-        document.getElementById('r-us').textContent = f.smooth_uS.toFixed(2);
-        document.getElementById('r-delta').textContent = f.delta;
-        document.getElementById('r-ta').textContent = f.ta.toFixed(2);
-        document.getElementById('r-warmed').textContent = f.warmed ? '✓' : '…';
-
-        updatePolygram(f.smooth_uS);
-      };
-    }
+          updatePolygram(f.smooth_uS);
+        };
+      }
 
     connect();
   </script>
