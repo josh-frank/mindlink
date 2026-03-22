@@ -637,7 +637,7 @@
     const stText = document.getElementById('status-text');
 
     function connect() {
-      const ws = new WebSocket(`ws://${location.host}`);
+      const ws = new WebSocket(`ws://${location.hostname}:5001`);
 
       ws.onopen = () => {
         dot.classList.add('live');

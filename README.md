@@ -1,3 +1,3 @@
 ## MindLink
 
-### A RaspberryPi EDA & polygraph stack
+### EDA & polygraph stack for RaspberryPi
