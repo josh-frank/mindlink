@@ -249,8 +249,7 @@
           <g id="scale-group"></g>
           <!-- <path id="needle" d="m -0.8 0 l 0.8 -28 l -0.8 0 z" fill="var(--red)"
             style="transform-origin:0 0;transform:rotate(-90deg)" /> -->
-           <line id="needle" x1="0" y1="0" x2="-28" y2="0" stroke="var(--red)" stroke-width="0.5"
-            style="transform-origin:0 0;transform:rotate(-90deg)" />
+           <line id="needle" x1="0" y1="0" x2="-28" y2="0" stroke="var(--red)" stroke-width="0.5" />
           <circle cx="0" cy="-28" r="1.2" fill="var(--red)" id="needle-tip"
             style="transform-origin:0 0;transform:rotate(-90deg)" />
           <circle cx="0" cy="0" r="2" fill="#2c3e50" />
@@ -653,8 +652,9 @@
           const f = JSON.parse(data);
 
           // delta-based mapping — works regardless of absolute µS baseline
-          const sensitivity = 5;  // tune this: lower = more sensitive
-          let norm = 0.5 + (f.delta / sensitivity) * 0.5;
+          const sensitivity = 20 / sensKnob.getValue();  // knob 1-16, higher = more sensitive
+          const taOffset = (taKnob.getValue() - 2.0) * 0.1;
+          let norm = 0.5 + taOffset + (f.delta / sensitivity) * 0.5;
           norm = Math.max(0, Math.min(1, norm));
           setNeedle(norm);
 
