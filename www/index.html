@@ -651,16 +651,11 @@
       ws.onmessage = ({ data }) => {
         const f = JSON.parse(data);
 
-        // sensitivity knob: 1-16, higher = more sensitive
-        const sensitivity = 20 / sensKnob.getValue();
-        // tone arm knob: offsets center (2.0 = center)
-        const taOffset = (taKnob.getValue() - 2.0) * 0.1;
-
-        let norm = 0.5 + taOffset + (f.delta / sensitivity) * 0.5;
+        const sensitivity = 5;
+        let norm = 0.5 + (f.delta / sensitivity) * 0.5;
         norm = Math.max(0, Math.min(1, norm));
         setNeedle(norm);
 
-        // readouts
         document.getElementById('r-us').textContent = f.smooth_uS.toFixed(2);
         document.getElementById('r-delta').textContent = f.delta;
         document.getElementById('r-ta').textContent = f.ta.toFixed(2);
