@@ -84,7 +84,7 @@ success "I2C enabled"
 if i2cdetect -y -a 1 | grep -q "04"; then
     success "Grove HAT detected at 0x04"
 else
-    warn "Grove HAT not detected — is it seated? Check with: i2cdetect -y -a 1"
+    warn "Grove HAT not detected — is it seated? Check later with: i2cdetect -y -a 1"
 fi
 
 # =============================================================================
@@ -93,10 +93,25 @@ section "Switching from NetworkManager to dhcpcd"
 
 # dhcpcd must take over the interface BEFORE NetworkManager is disabled —
 # otherwise the SSH connection drops mid-script.
-# Order: start dhcpcd → wait → disable NM → safe.
+# Order: start dhcpcd → sleep → verify IP → disable NM → safe.
 systemctl enable dhcpcd
 systemctl start dhcpcd
-sleep 5   # give dhcpcd time to claim the interface
+
+info "Waiting for dhcpcd to claim ${IFACE}..."
+sleep 10  # base wait
+
+# Actively confirm dhcpcd has an IP before pulling the NM plug
+for i in {1..15}; do
+    ip addr show "$IFACE" | grep -q "inet " && break
+    info "  still waiting... (${i}/15)"
+    sleep 2
+done
+
+if ip addr show "$IFACE" | grep -q "inet "; then
+    success "dhcpcd has claimed ${IFACE} — safe to disable NetworkManager"
+else
+    warn "dhcpcd slow to claim ${IFACE} — proceeding anyway, SSH may drop briefly"
+fi
 
 if systemctl is-active --quiet NetworkManager 2>/dev/null; then
     systemctl disable --now NetworkManager

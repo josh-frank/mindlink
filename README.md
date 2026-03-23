@@ -1,13 +1,18 @@
 ## MindLink
 
 *An EDA & polygraph stack for RaspberryPi*
+
 Turn your RaspberryPi Grove HAT into an EDA instrument
 
 ### Setup & install
 ```
 # on a freshly flashed Pi, from ~/
+apt install git python3-pip
+
+apt-get install i2c-tools
 raspi-config nonint do_i2c 0  # Enable i2c
 i2cdetect -y -a 1             # HAT working? Should see 04
+
 git clone https://github.com/<…this repo…>
 cd mindlink
 cp .env.example .env
