@@ -17,7 +17,7 @@ git clone https://github.com/<…this repo…>
 cd mindlink
 cp .env.example .env
 nano .env                     # set PASSPHRASE at minimum
-PASSPHRASE=<…> sudo bash setup.sh
+MINDLINK_USER=<…> PASSPHRASE=<…> sudo bash setup.sh
 ```
 
 ### Upcoming features

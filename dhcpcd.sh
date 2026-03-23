@@ -41,8 +41,8 @@ DHCP_START="192.168.4.2"
 DHCP_END="192.168.4.20"
 DHCP_LEASE="24h"
 CHANNEL="${CHANNEL:-6}"
-MINDLINK_DIR="${MINDLINK_DIR:-/home/pi/mindlink}"
-MINDLINK_USER="${MINDLINK_USER:-pi}"
+MINDLINK_DIR="${MINDLINK_DIR:-/home/${SUDO_USER:-pi}/mindlink}"
+MINDLINK_USER="${MINDLINK_USER:-${SUDO_USER:-pi}}"
 # =============================================================================
 
 # =============================================================================
@@ -69,6 +69,7 @@ info "Device    : $DEVICE_ID"
 info "Interface : $IFACE"
 info "SSID      : $SSID"
 info "Hotspot IP: $HOTSPOT_IP"
+info "User      : $MINDLINK_USER"
 info "MindLink  : $MINDLINK_DIR"
 
 # =============================================================================
@@ -79,6 +80,8 @@ apt-get update -qq
 apt-get install -y hostapd dnsmasq dhcpcd5 python3-websockets python3-aiohttp i2c-tools
 systemctl unmask hostapd
 pip3 install grove.py --break-system-packages --quiet
+# Also install for the service user in case their env differs from root's
+sudo -u "$MINDLINK_USER" pip3 install grove.py --break-system-packages --quiet
 success "Packages installed"
 
 # =============================================================================
@@ -92,6 +95,23 @@ if i2cdetect -y -a 1 | grep -q "04"; then
     success "Grove HAT detected at 0x04"
 else
     warn "Grove HAT not detected — check later with: i2cdetect -y -a 1"
+fi
+
+# =============================================================================
+section "Neutralising wpa_supplicant client config"
+# =============================================================================
+
+# If a wpa_supplicant.conf exists with a home network in it, it will fight
+# hostapd for wlan0 on boot and one of them will lose (probably the hotspot).
+# We back it up and replace it with an empty config so hostapd wins cleanly.
+WPA_CONF=/etc/wpa_supplicant/wpa_supplicant.conf
+if [[ -f "$WPA_CONF" ]]; then
+    cp "$WPA_CONF" "${WPA_CONF}.bak"
+    echo "ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev" > "$WPA_CONF"
+    echo "update_config=1" >> "$WPA_CONF"
+    info "wpa_supplicant.conf neutralised (backup at ${WPA_CONF}.bak)"
+else
+    info "No wpa_supplicant.conf found — nothing to neutralise"
 fi
 
 # =============================================================================
@@ -164,13 +184,13 @@ section "Installing mindlink.service"
 cat > /etc/systemd/system/mindlink.service <<EOF
 [Unit]
 Description=MindLink GSR WebSocket server
-After=network.target
+After=hostapd.service dnsmasq.service
 
 [Service]
 Type=simple
 User=${MINDLINK_USER}
 WorkingDirectory=${MINDLINK_DIR}
-ExecStart=/usr/bin/python3 ${MINDLINK_DIR}/mindlink.py ${HOTSPOT_IP}:5000
+ExecStart=/usr/bin/python3 ${MINDLINK_DIR}/mindlink.py 0.0.0.0:5000
 Restart=on-failure
 RestartSec=5
 
@@ -194,14 +214,19 @@ success "dhcpcd, hostapd, dnsmasq, mindlink enabled"
 section "Ready — reboot to apply"
 # =============================================================================
 
+PAD=41
+print_row() { printf "│ %-${PAD}s │\n" "$1"; }
+
 echo ""
-echo -e "${GREEN}${BOLD}┌─────────────────────────────────────────┐${RESET}"
-echo -e "${GREEN}${BOLD}│  All configs written, services enabled  │${RESET}"
-echo -e "${GREEN}${BOLD}│  Device : ${DEVICE_ID}  │${RESET}"
-echo -e "${GREEN}${BOLD}│  SSID   : ${SSID}                   │${RESET}"
-echo -e "${GREEN}${BOLD}│  Stream : ws://${HOTSPOT_IP}:5000   │${RESET}"
-echo -e "${GREEN}${BOLD}│  HTTP   : http://${HOTSPOT_IP}:5001 │${RESET}"
-echo -e "${GREEN}${BOLD}└─────────────────────────────────────────┘${RESET}"
+echo -e "${GREEN}${BOLD}┌$(printf '─%.0s' $(seq 1 $((PAD+2))))┐${RESET}"
+print_row "All configs written, services enabled"
+print_row ""
+print_row "  Device : ${DEVICE_ID}"
+print_row "  User   : ${MINDLINK_USER}"
+print_row "  SSID   : ${SSID}"
+print_row "  Stream : ws://${HOTSPOT_IP}:5000"
+print_row "  HTTP   : http://${HOTSPOT_IP}:5001"
+echo -e "${GREEN}${BOLD}└$(printf '─%.0s' $(seq 1 $((PAD+2))))┘${RESET}"
 echo ""
 echo -e "After reboot, connect to Wi-Fi SSID ${BOLD}${SSID}${RESET} and verify:"
 echo -e "  ws stream : ${CYAN}ws://${HOTSPOT_IP}:5000${RESET}"
