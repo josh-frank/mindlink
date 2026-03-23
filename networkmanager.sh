@@ -39,8 +39,8 @@ IFACE="${IFACE:-wlan0}"
 HOTSPOT_IP="192.168.4.1"
 CHANNEL="${CHANNEL:-6}"
 CON_NAME="${CON_NAME:-mindlink-hotspot}"
-MINDLINK_DIR="${MINDLINK_DIR:-/home/pi/mindlink}"
-MINDLINK_USER="${MINDLINK_USER:-pi}"
+MINDLINK_DIR="${MINDLINK_DIR:-/home/${SUDO_USER:-pi}/mindlink}"
+MINDLINK_USER="${MINDLINK_USER:-${SUDO_USER:-pi}}"
 # =============================================================================
 
 # =============================================================================
@@ -65,6 +65,7 @@ info "Device    : $DEVICE_ID"
 info "Interface : $IFACE"
 info "SSID      : $SSID"
 info "Hotspot IP: $HOTSPOT_IP"
+info "User      : $MINDLINK_USER"
 info "MindLink  : $MINDLINK_DIR"
 
 # =============================================================================
@@ -75,6 +76,8 @@ apt-get update -qq
 # hostapd/dnsmasq not needed — NM drives the AP and handles DHCP natively
 apt-get install -y python3-websockets python3-aiohttp i2c-tools
 pip3 install grove.py --break-system-packages --quiet
+# Also install for the service user in case their env differs from root's
+sudo -u "$MINDLINK_USER" pip3 install grove.py --break-system-packages --quiet
 success "Packages installed"
 
 # =============================================================================
@@ -95,7 +98,6 @@ section "Writing NetworkManager hotspot connection"
 # =============================================================================
 
 # Delete any stale connection with the same name so we get a clean slate.
-# nmcli exits non-zero if the connection doesn't exist; suppress that.
 nmcli connection delete "$CON_NAME" 2>/dev/null \
     && info "Removed existing '$CON_NAME' connection" || true
 
@@ -121,6 +123,17 @@ nmcli connection add \
     ipv4.addresses "${HOTSPOT_IP}/24"
 
 success "NM connection '$CON_NAME' written (will activate on reboot)"
+
+# Prevent any existing client (station) connections from fighting the AP on boot.
+# We iterate all wifi connections except our new hotspot and disable autoconnect.
+# This is safe to run over SSH — nothing is brought down live.
+section "Disabling autoconnect on existing WiFi client connections"
+while IFS= read -r con; do
+    [[ "$con" == "$CON_NAME" ]] && continue
+    nmcli connection modify "$con" autoconnect no 2>/dev/null \
+        && info "Disabled autoconnect: $con" || true
+done < <(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="wifi"{print $1}')
+success "Existing WiFi client connections will not compete with hotspot on boot"
 
 # =============================================================================
 section "Installing mindlink.service"
@@ -153,21 +166,17 @@ section "Ready — reboot to apply"
 # =============================================================================
 
 PAD=41
-LINE="  Device : ${DEVICE_ID}"
-SSID_LINE="  SSID   : ${SSID}"
-WS_LINE="  Stream : ws://${HOTSPOT_IP}:5000"
-HTTP_LINE="  HTTP   : http://${HOTSPOT_IP}:5001"
-
 print_row() { printf "│ %-${PAD}s │\n" "$1"; }
 
 echo ""
 echo -e "${GREEN}${BOLD}┌$(printf '─%.0s' $(seq 1 $((PAD+2))))┐${RESET}"
 print_row "All configs written, services enabled"
 print_row ""
-print_row "$LINE"
-print_row "$SSID_LINE"
-print_row "$WS_LINE"
-print_row "$HTTP_LINE"
+print_row "  Device : ${DEVICE_ID}"
+print_row "  User   : ${MINDLINK_USER}"
+print_row "  SSID   : ${SSID}"
+print_row "  Stream : ws://${HOTSPOT_IP}:5000"
+print_row "  HTTP   : http://${HOTSPOT_IP}:5001"
 echo -e "${GREEN}${BOLD}└$(printf '─%.0s' $(seq 1 $((PAD+2))))┘${RESET}"
 echo ""
 echo -e "After reboot, connect to Wi-Fi SSID ${BOLD}${SSID}${RESET} and verify:"
