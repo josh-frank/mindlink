@@ -2,10 +2,10 @@
 # =============================================================================
 #  networkmanager.sh — MindLink hotspot via NetworkManager
 #
-#  Uses nmcli's built-in AP mode (ipv4.method shared) which provides DHCP and
-#  NAT without needing dnsmasq or dhcpcd.  Never disables NetworkManager, so
-#  your SSH session over *another* interface (eth0, USB gadget, etc.) stays up.
-#  If you're SSHing over wlan0 itself, connect via eth0 first.
+#  Writes the NM AP connection and mindlink.service, then reboots.
+#  Nothing is brought up live — the Pi comes up cleanly on the next boot
+#  with the hotspot already active.
+#  Safe to run over wlan0 SSH: your session stays up for the whole script.
 #
 #  Usage:
 #    cp .env.example .env && nano .env
@@ -91,16 +91,20 @@ else
 fi
 
 # =============================================================================
-section "Creating NetworkManager hotspot connection"
+section "Writing NetworkManager hotspot connection"
 # =============================================================================
 
 # Delete any stale connection with the same name so we get a clean slate.
 # nmcli exits non-zero if the connection doesn't exist; suppress that.
-nmcli connection delete "$CON_NAME" 2>/dev/null && info "Removed existing '$CON_NAME' connection" || true
+nmcli connection delete "$CON_NAME" 2>/dev/null \
+    && info "Removed existing '$CON_NAME' connection" || true
 
 # Create the AP connection.
 # ipv4.method shared = NM enables IP forwarding, runs its built-in DHCP server,
 # and assigns HOTSPOT_IP as the gateway — all without dnsmasq or hostapd.
+# autoconnect yes = NM brings this up automatically on every boot.
+# We do NOT call `nmcli connection up` here — that would yank wlan0 away from
+# your current network and drop your SSH session.  The reboot handles it.
 nmcli connection add \
     type wifi \
     ifname "$IFACE" \
@@ -116,26 +120,7 @@ nmcli connection add \
     ipv4.method shared \
     ipv4.addresses "${HOTSPOT_IP}/24"
 
-success "NM connection '$CON_NAME' created"
-
-# =============================================================================
-section "Bringing up hotspot"
-# =============================================================================
-
-# nmcli up operates only on the NM connection — it does not touch any other
-# interface, so your SSH session on eth0/USB survives this step.
-nmcli connection up "$CON_NAME"
-success "Hotspot up on $IFACE"
-
-# Give the AP a moment to associate before we verify
-sleep 3
-
-# Confirm the interface now holds the expected IP
-if ip addr show "$IFACE" | grep -q "${HOTSPOT_IP}"; then
-    success "$IFACE has IP $HOTSPOT_IP"
-else
-    warn "$IFACE does not yet show $HOTSPOT_IP — NM may still be settling.  Check: ip addr show $IFACE"
-fi
+success "NM connection '$CON_NAME' written (will activate on reboot)"
 
 # =============================================================================
 section "Installing mindlink.service"
@@ -144,7 +129,6 @@ section "Installing mindlink.service"
 cat > /etc/systemd/system/mindlink.service <<EOF
 [Unit]
 Description=MindLink GSR WebSocket server
-# Wait for the NM hotspot connection to be established before starting
 After=network-online.target NetworkManager-wait-online.service
 Wants=network-online.target
 
@@ -162,40 +146,31 @@ EOF
 
 systemctl daemon-reload
 systemctl enable mindlink
-systemctl restart mindlink
-success "mindlink.service installed, enabled, and started"
+success "mindlink.service written and enabled (will start on reboot)"
 
 # =============================================================================
-section "Verifying services"
+section "Ready — reboot to apply"
 # =============================================================================
-
-FAIL=0
-
-# NM manages the AP — check the connection is active, not a separate hostapd svc
-if nmcli -t -f NAME,STATE connection show --active | grep -q "^${CON_NAME}:activated"; then
-    success "NM hotspot '$CON_NAME' is active"
-else
-    echo -e "${RED}[FAIL]${RESET}  NM hotspot not active — check: nmcli connection show $CON_NAME"
-    FAIL=1
-fi
-
-if systemctl is-active --quiet mindlink; then
-    success "mindlink is running"
-else
-    echo -e "${RED}[FAIL]${RESET}  mindlink failed — check: journalctl -u mindlink"
-    FAIL=1
-fi
 
 echo ""
-if [[ $FAIL -eq 0 ]]; then
-    echo -e "${GREEN}${BOLD}┌─────────────────────────────────────────┐${RESET}"
-    echo -e "${GREEN}${BOLD}│  MindLink is live (NetworkManager)      │${RESET}"
-    echo -e "${GREEN}${BOLD}│  Device : ${DEVICE_ID}  │${RESET}"
-    echo -e "${GREEN}${BOLD}│  SSID   : ${SSID}                   │${RESET}"
-    echo -e "${GREEN}${BOLD}│  Stream : ws://${HOTSPOT_IP}:5000   │${RESET}"
-    echo -e "${GREEN}${BOLD}│  HTTP   : http://${HOTSPOT_IP}:5001 │${RESET}"
-    echo -e "${GREEN}${BOLD}└─────────────────────────────────────────┘${RESET}"
+echo -e "${GREEN}${BOLD}┌─────────────────────────────────────────┐${RESET}"
+echo -e "${GREEN}${BOLD}│  All configs written, services enabled  │${RESET}"
+echo -e "${GREEN}${BOLD}│  Device : ${DEVICE_ID}  │${RESET}"
+echo -e "${GREEN}${BOLD}│  SSID   : ${SSID}                   │${RESET}"
+echo -e "${GREEN}${BOLD}│  Stream : ws://${HOTSPOT_IP}:5000   │${RESET}"
+echo -e "${GREEN}${BOLD}│  HTTP   : http://${HOTSPOT_IP}:5001 │${RESET}"
+echo -e "${GREEN}${BOLD}└─────────────────────────────────────────┘${RESET}"
+echo ""
+echo -e "After reboot, connect to Wi-Fi SSID ${BOLD}${SSID}${RESET} and verify:"
+echo -e "  ws stream : ${CYAN}ws://${HOTSPOT_IP}:5000${RESET}"
+echo -e "  http feed : ${CYAN}http://${HOTSPOT_IP}:5001${RESET}"
+echo -e "  service   : ${CYAN}journalctl -u mindlink -f${RESET}"
+echo ""
+
+read -r -p "Reboot now? [y/N] " REPLY
+if [[ "${REPLY,,}" == "y" ]]; then
+    info "Rebooting..."
+    reboot
 else
-    echo -e "${RED}${BOLD}One or more services failed. Review logs above.${RESET}"
-    exit 1
+    warn "Skipping reboot — run 'sudo reboot' when ready."
 fi
