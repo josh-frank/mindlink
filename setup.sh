@@ -69,9 +69,23 @@ section "Installing packages"
 # =============================================================================
 
 apt-get update -qq
-apt-get install -y hostapd dnsmasq dhcpcd5 python3-websockets python3-aiohttp
+apt-get install -y hostapd dnsmasq dhcpcd5 python3-websockets python3-aiohttp i2c-tools
 systemctl unmask hostapd
+pip3 install grove.py --break-system-packages --quiet
 success "Packages installed"
+
+# =============================================================================
+section "Enabling I2C and checking Grove HAT"
+# =============================================================================
+
+raspi-config nonint do_i2c 0
+success "I2C enabled"
+
+if i2cdetect -y -a 1 | grep -q "04"; then
+    success "Grove HAT detected at 0x04"
+else
+    warn "Grove HAT not detected — is it seated? Check with: i2cdetect -y -a 1"
+fi
 
 # =============================================================================
 section "Switching from NetworkManager to dhcpcd"
