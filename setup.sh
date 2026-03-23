@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  setup.sh — Turn a Raspberry Pi Zero 2 into a MindLink GSR data appliance
+#  setup.sh — Turn a Raspberry Pi into a MindLink GSR data appliance
 #  Creates a Wi-Fi hotspot and auto-starts the mindlink.py WebSocket server
 #  SSID: MindLink | Subnet: 192.168.4.0/24 | Gateway: 192.168.4.1
 #
@@ -44,21 +44,6 @@ MINDLINK_DIR="${MINDLINK_DIR:-/home/pi/mindlink}"
 MINDLINK_USER="${MINDLINK_USER:-pi}"
 # =============================================================================
 
-# ── Detect network manager ────────────────────────────────────────────────────
-if systemctl is-active --quiet NetworkManager 2>/dev/null; then
-    NET_MGR="NetworkManager"
-elif systemctl is-active --quiet dhcpcd 2>/dev/null \
-  || systemctl is-enabled --quiet dhcpcd 2>/dev/null; then
-    NET_MGR="dhcpcd"
-elif apt-cache show dhcpcd5 &>/dev/null; then
-    info "Neither NetworkManager nor dhcpcd active — installing dhcpcd5"
-    apt-get install -y dhcpcd5
-    NET_MGR="dhcpcd"
-else
-    error "Could not detect a supported network manager (NetworkManager or dhcpcd)."
-fi
-info "Network manager: $NET_MGR"
-
 # =============================================================================
 section "Preflight checks"
 # =============================================================================
@@ -84,9 +69,26 @@ section "Installing packages"
 # =============================================================================
 
 apt-get update -qq
-apt-get install -y hostapd dnsmasq python3-websockets python3-aiohttp
+apt-get install -y hostapd dnsmasq dhcpcd5 python3-websockets python3-aiohttp
 systemctl unmask hostapd
 success "Packages installed"
+
+# =============================================================================
+section "Using dhcpcd: disabling NetworkManager"
+# =============================================================================
+
+# NetworkManager and hostapd fight over wlan0 — dhcpcd is simpler and works
+# on every Pi board. NM is left installed but inactive; re-enable it later
+# with: sudo systemctl enable --now NetworkManager
+if systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    systemctl disable --now NetworkManager
+    warn "NetworkManager disabled — re-enable later with: sudo systemctl enable --now NetworkManager"
+else
+    info "NetworkManager not active — nothing to disable"
+fi
+
+systemctl enable --now dhcpcd
+success "dhcpcd active"
 
 # =============================================================================
 section "Stopping services before configuration"
@@ -138,46 +140,25 @@ EOF
 success "dnsmasq configured"
 
 # =============================================================================
-section "Assigning static IP via $NET_MGR"
+section "Assigning static IP via dhcpcd"
 # =============================================================================
 
-if [[ "$NET_MGR" == "dhcpcd" ]]; then
+DHCPCD_CONF=/etc/dhcpcd.conf
 
-    DHCPCD_CONF=/etc/dhcpcd.conf
-    if grep -q "interface ${IFACE}" "$DHCPCD_CONF" 2>/dev/null; then
-        warn "Static IP block already present in dhcpcd.conf — skipping."
-    else
-        cat >> "$DHCPCD_CONF" <<EOF
+if grep -q "interface ${IFACE}" "$DHCPCD_CONF" 2>/dev/null; then
+    warn "Static IP block already present in dhcpcd.conf — skipping."
+else
+    cat >> "$DHCPCD_CONF" <<EOF
 
 # ── MindLink hotspot ──────────────────────────────────────────────────────────
 interface ${IFACE}
 static ip_address=${HOTSPOT_IP}/24
 nohook wpa_supplicant
 EOF
-        success "Static IP configured in dhcpcd.conf"
-    fi
-    systemctl restart dhcpcd
-
-elif [[ "$NET_MGR" == "NetworkManager" ]]; then
-
-    # Remove any existing MindLink profile then recreate cleanly
-    nmcli connection delete "mindlink-hotspot" 2>/dev/null || true
-    nmcli connection add \
-        type wifi \
-        ifname "$IFACE" \
-        con-name "mindlink-hotspot" \
-        ssid "$SSID" \
-        mode ap \
-        ipv4.method shared \
-        ipv4.addresses "${HOTSPOT_IP}/24" \
-        wifi-sec.key-mgmt wpa-psk \
-        wifi-sec.psk "$PASSPHRASE" \
-        802-11-wireless.band bg \
-        802-11-wireless.channel "$CHANNEL"
-    nmcli connection up "mindlink-hotspot"
-    success "Hotspot profile configured via NetworkManager"
-
+    success "Static IP ${HOTSPOT_IP}/24 configured in dhcpcd.conf"
 fi
+
+systemctl restart dhcpcd
 
 # =============================================================================
 section "Installing mindlink.service"
