@@ -91,16 +91,29 @@ fi
 section "Switching from NetworkManager to dhcpcd"
 # =============================================================================
 
-# dhcpcd must take over the interface BEFORE NetworkManager is disabled —
-# otherwise the SSH connection drops mid-script.
-# Order: start dhcpcd → sleep → verify IP → disable NM → safe.
+# NM and dhcpcd cannot both manage wlan0 — NM must release the interface
+# gracefully BEFORE dhcpcd starts, otherwise NM holds the WiFi association
+# even after dhcpcd claims an IP, and disabling NM drops SSH.
+# Fix: tell NM to unmanage wlan0 first, reload NM, then hand off to dhcpcd.
+
+if systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    info "Telling NetworkManager to release ${IFACE}..."
+    mkdir -p /etc/NetworkManager/conf.d
+    cat > /etc/NetworkManager/conf.d/mindlink.conf <<EOF
+[keyfile]
+unmanaged-devices=interface-name:${IFACE}
+EOF
+    systemctl reload NetworkManager
+    sleep 5   # give NM time to release the interface cleanly
+    success "NetworkManager released ${IFACE}"
+fi
+
 systemctl enable dhcpcd
 systemctl start dhcpcd
 
 info "Waiting for dhcpcd to claim ${IFACE}..."
-sleep 10  # base wait
+sleep 10
 
-# Actively confirm dhcpcd has an IP before pulling the NM plug
 for i in {1..15}; do
     ip addr show "$IFACE" | grep -q "inet " && break
     info "  still waiting... (${i}/15)"
@@ -108,9 +121,9 @@ for i in {1..15}; do
 done
 
 if ip addr show "$IFACE" | grep -q "inet "; then
-    success "dhcpcd has claimed ${IFACE} — safe to disable NetworkManager"
+    success "dhcpcd has claimed ${IFACE}"
 else
-    warn "dhcpcd slow to claim ${IFACE} — proceeding anyway, SSH may drop briefly"
+    warn "dhcpcd slow to claim ${IFACE} — proceeding anyway"
 fi
 
 if systemctl is-active --quiet NetworkManager 2>/dev/null; then
@@ -173,6 +186,13 @@ success "dnsmasq configured"
 
 # =============================================================================
 section "Assigning static IP via dhcpcd"
+# =============================================================================
+# If this section causes SSH to drop repeatedly, the nuclear option is:
+#   sudo systemctl enable --now NetworkManager
+#   sudo nmcli connection add type wifi ifname wlan0 con-name mindlink-hotspot \
+#     ssid "$SSID" mode ap ipv4.method shared ipv4.addresses 192.168.4.1/24 \
+#     wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PASSPHRASE"
+#   sudo nmcli connection up mindlink-hotspot
 # =============================================================================
 
 DHCPCD_CONF=/etc/dhcpcd.conf
