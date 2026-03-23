@@ -74,12 +74,16 @@ systemctl unmask hostapd
 success "Packages installed"
 
 # =============================================================================
-section "Using dhcpcd: disabling NetworkManager"
+section "Switching from NetworkManager to dhcpcd"
 # =============================================================================
 
-# NetworkManager and hostapd fight over wlan0 — dhcpcd is simpler and works
-# on every Pi board. NM is left installed but inactive; re-enable it later
-# with: sudo systemctl enable --now NetworkManager
+# dhcpcd must take over the interface BEFORE NetworkManager is disabled —
+# otherwise the SSH connection drops mid-script.
+# Order: start dhcpcd → wait → disable NM → safe.
+systemctl enable dhcpcd
+systemctl start dhcpcd
+sleep 5   # give dhcpcd time to claim the interface
+
 if systemctl is-active --quiet NetworkManager 2>/dev/null; then
     systemctl disable --now NetworkManager
     warn "NetworkManager disabled — re-enable later with: sudo systemctl enable --now NetworkManager"
@@ -87,7 +91,6 @@ else
     info "NetworkManager not active — nothing to disable"
 fi
 
-systemctl enable --now dhcpcd
 success "dhcpcd active"
 
 # =============================================================================
