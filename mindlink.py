@@ -151,6 +151,6 @@ async def main(host: str, ws_port: int):
 
 
 if __name__ == "__main__":
-    addr = sys.argv[1] if len(sys.argv) > 1 else "192.168.4.1:5000"
+    addr = sys.argv[1] if len(sys.argv) > 1 else "0.0.0.0:5000"
     host, port = addr.rsplit(":", 1)
     asyncio.run(main(host, int(port)))

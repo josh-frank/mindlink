@@ -136,7 +136,7 @@ Wants=network-online.target
 Type=simple
 User=${MINDLINK_USER}
 WorkingDirectory=${MINDLINK_DIR}
-ExecStart=/usr/bin/python3 ${MINDLINK_DIR}/mindlink.py ${HOTSPOT_IP}:5000
+ExecStart=/usr/bin/python3 ${MINDLINK_DIR}/mindlink.py 0.0.0.0:5000
 Restart=on-failure
 RestartSec=5
 
@@ -152,14 +152,23 @@ success "mindlink.service written and enabled (will start on reboot)"
 section "Ready — reboot to apply"
 # =============================================================================
 
+PAD=41
+LINE="  Device : ${DEVICE_ID}"
+SSID_LINE="  SSID   : ${SSID}"
+WS_LINE="  Stream : ws://${HOTSPOT_IP}:5000"
+HTTP_LINE="  HTTP   : http://${HOTSPOT_IP}:5001"
+
+print_row() { printf "│ %-${PAD}s │\n" "$1"; }
+
 echo ""
-echo -e "${GREEN}${BOLD}┌─────────────────────────────────────────┐${RESET}"
-echo -e "${GREEN}${BOLD}│  All configs written, services enabled  │${RESET}"
-echo -e "${GREEN}${BOLD}│  Device : ${DEVICE_ID}  │${RESET}"
-echo -e "${GREEN}${BOLD}│  SSID   : ${SSID}                   │${RESET}"
-echo -e "${GREEN}${BOLD}│  Stream : ws://${HOTSPOT_IP}:5000   │${RESET}"
-echo -e "${GREEN}${BOLD}│  HTTP   : http://${HOTSPOT_IP}:5001 │${RESET}"
-echo -e "${GREEN}${BOLD}└─────────────────────────────────────────┘${RESET}"
+echo -e "${GREEN}${BOLD}┌$(printf '─%.0s' $(seq 1 $((PAD+2))))┐${RESET}"
+print_row "All configs written, services enabled"
+print_row ""
+print_row "$LINE"
+print_row "$SSID_LINE"
+print_row "$WS_LINE"
+print_row "$HTTP_LINE"
+echo -e "${GREEN}${BOLD}└$(printf '─%.0s' $(seq 1 $((PAD+2))))┘${RESET}"
 echo ""
 echo -e "After reboot, connect to Wi-Fi SSID ${BOLD}${SSID}${RESET} and verify:"
 echo -e "  ws stream : ${CYAN}ws://${HOTSPOT_IP}:5000${RESET}"
