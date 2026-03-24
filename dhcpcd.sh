@@ -107,13 +107,37 @@ if [[ "$OS_CODENAME" == "bullseye" ]]; then
 fi
 
 apt-get update -qq
-apt-get install -y hostapd dnsmasq dhcpcd5 python3-websockets python3-aiohttp i2c-tools
+apt-get install -y hostapd dnsmasq dhcpcd5 python3-websockets python3-aiohttp i2c-tools rfkill
 
 # Always unmask after apt in case the postinstall masked it anyway.
 systemctl unmask hostapd
 pip3 install grove.py $PIP_FLAGS --quiet
 sudo -u "$MINDLINK_USER" pip3 install grove.py $PIP_FLAGS --quiet
 success "Packages installed"
+
+# =============================================================================
+section "Unblocking WiFi radio"
+# =============================================================================
+
+# Some images soft-block WiFi on first boot via rfkill.  Unblock it now and
+# persist via a oneshot service so it runs before hostapd on every boot.
+rfkill unblock wifi
+cat > /etc/systemd/system/rfkill-unblock-wifi.service <<EOF
+[Unit]
+Description=Unblock WiFi rfkill on boot
+Before=hostapd.service dhcpcd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/rfkill unblock wifi
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable rfkill-unblock-wifi
+success "WiFi rfkill unblocked and persisted"
 
 # =============================================================================
 section "Enabling I2C and checking Grove HAT"
@@ -174,7 +198,7 @@ country_code=US
 hw_mode=g
 channel=${CHANNEL}
 ieee80211n=1
-ht_capab=[HT40][SHORT-GI-20][SHORT-GI-40]
+ht_capab=[HT20][SHORT-GI-20]
 auth_algs=1
 wpa=2
 wpa_passphrase=${PASSPHRASE}
@@ -226,8 +250,21 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+# =============================================================================
+section "Fixing dnsmasq startup ordering"
+# =============================================================================
+
+# dnsmasq starts before wlan0 is fully up and fails with "unknown interface".
+# This drop-in makes dnsmasq wait for hostapd (and therefore wlan0) first.
+mkdir -p /etc/systemd/system/dnsmasq.service.d
+cat > /etc/systemd/system/dnsmasq.service.d/wait-for-hostapd.conf <<EOF
+[Unit]
+After=hostapd.service
+Wants=hostapd.service
+EOF
+
 systemctl daemon-reload
-success "mindlink.service written"
+success "mindlink.service and dnsmasq ordering written"
 
 # =============================================================================
 section "Enabling services (will start on reboot)"
