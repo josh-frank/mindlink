@@ -2,8 +2,6 @@
 
 *An EDA & polygraph stack for RaspberryPi*
 
-Turn your RaspberryPi Grove HAT into an EDA instrument
-
 ### Setup & install
 ```
 # on a freshly flashed Pi, from ~/

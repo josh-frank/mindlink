@@ -2,6 +2,9 @@
 # =============================================================================
 #  dhcpcd.sh — MindLink hotspot via dhcpcd + hostapd + dnsmasq
 #
+#  Supports Bullseye (native dhcpcd) and Bookworm+ (dhcpcd manually overriding
+#  NetworkManager).  Detects OS version and pip capability automatically.
+#
 #  Assumes NetworkManager is NOT running (or not installed).  Writes all
 #  configs and enables all services, then reboots.  Nothing is started live —
 #  the Pi comes up cleanly on the next boot with the hotspot already active.
@@ -46,6 +49,17 @@ MINDLINK_USER="${MINDLINK_USER:-${SUDO_USER:-pi}}"
 # =============================================================================
 
 # =============================================================================
+#  OS & CAPABILITY DETECTION
+# =============================================================================
+OS_CODENAME=$(. /etc/os-release && echo "${VERSION_CODENAME:-unknown}")
+info "OS codename: $OS_CODENAME"
+
+# --break-system-packages was introduced in pip 23.x (Bookworm+); not on Bullseye
+PIP_FLAGS=""
+pip3 install --help 2>&1 | grep -q -- "--break-system-packages" \
+    && PIP_FLAGS="--break-system-packages"
+
+# =============================================================================
 section "Preflight checks"
 # =============================================================================
 
@@ -58,9 +72,18 @@ section "Preflight checks"
 ip link show "$IFACE" &>/dev/null \
     || error "Interface '$IFACE' not found.  Is the Wi-Fi adapter present?"
 
-# Bail early if NetworkManager is still managing the interface — it will fight
-# dhcpcd for wlan0 and one of them will lose (probably you).
-if systemctl is-active --quiet NetworkManager 2>/dev/null; then
+# On non-Bullseye systems, warn if NetworkManager is still present — the caller
+# should have disabled it before running this script.
+if [[ "$OS_CODENAME" != "bullseye" ]] && command -v nmcli &>/dev/null; then
+    if systemctl is-active --quiet NetworkManager 2>/dev/null; then
+        error "NetworkManager is active. Disable it first:\n         sudo systemctl disable --now NetworkManager\n       Then re-run this script."
+    else
+        warn "NetworkManager is installed but inactive — proceeding (dhcpcd will take over on reboot)."
+    fi
+fi
+
+# On Bullseye, NM shouldn't be present at all, but guard anyway.
+if [[ "$OS_CODENAME" == "bullseye" ]] && systemctl is-active --quiet NetworkManager 2>/dev/null; then
     error "NetworkManager is active. This script requires dhcpcd only.\n       Run setup.sh for auto-detection, or disable NM first:\n         sudo systemctl disable --now NetworkManager"
 fi
 
@@ -76,12 +99,20 @@ info "MindLink  : $MINDLINK_DIR"
 section "Installing packages"
 # =============================================================================
 
+# On Bullseye, hostapd's apt postinstall tries to start the service, fails
+# (wlan0 is busy), and masks itself.  Pre-unmask so apt's postinstall is a
+# no-op rather than a mask operation.
+if [[ "$OS_CODENAME" == "bullseye" ]]; then
+    systemctl unmask hostapd 2>/dev/null || true
+fi
+
 apt-get update -qq
 apt-get install -y hostapd dnsmasq dhcpcd5 python3-websockets python3-aiohttp i2c-tools
+
+# Always unmask after apt in case the postinstall masked it anyway.
 systemctl unmask hostapd
-pip3 install grove.py --break-system-packages --quiet
-# Also install for the service user in case their env differs from root's
-sudo -u "$MINDLINK_USER" pip3 install grove.py --break-system-packages --quiet
+pip3 install grove.py $PIP_FLAGS --quiet
+sudo -u "$MINDLINK_USER" pip3 install grove.py $PIP_FLAGS --quiet
 success "Packages installed"
 
 # =============================================================================
@@ -101,9 +132,6 @@ fi
 section "Neutralising wpa_supplicant client config"
 # =============================================================================
 
-# If a wpa_supplicant.conf exists with a home network in it, it will fight
-# hostapd for wlan0 on boot and one of them will lose (probably the hotspot).
-# We back it up and replace it with an empty config so hostapd wins cleanly.
 WPA_CONF=/etc/wpa_supplicant/wpa_supplicant.conf
 if [[ -f "$WPA_CONF" ]]; then
     cp "$WPA_CONF" "${WPA_CONF}.bak"
@@ -205,8 +233,6 @@ success "mindlink.service written"
 section "Enabling services (will start on reboot)"
 # =============================================================================
 
-# Only *enable* here — nothing starts until the reboot below.
-# This means the script is safe to run over a wlan0 SSH session.
 systemctl enable dhcpcd hostapd dnsmasq mindlink
 success "dhcpcd, hostapd, dnsmasq, mindlink enabled"
 
