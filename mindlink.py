@@ -86,31 +86,36 @@ def next_frame(state: dict) -> dict:
     }
 
 
-# ── shared state (latest frame, set by WebSocket loop) ─────────────────────
+# ── shared state ───────────────────────────────────────────────────────────
 _latest_frame: dict = {}
+_state: dict = {}
 
 
-async def stream(websocket):
-    print(f"[MindLink] client connected: {websocket.remote_address}")
-
-    seed              = read_raw()
-    state             = {
+async def sample_loop():
+    """Runs forever at SAMPLE_RATE_HZ, populates _latest_frame continuously."""
+    global _latest_frame
+    seed = read_raw()
+    _state.update({
         "smoothed": float(seed),
         "baseline": float(seed),
         "delta":    0.0,
         "ta":       0.0,
         "count":    0,
         "t0":       time.monotonic(),
-    }
+    })
+    while True:
+        tick = time.monotonic()
+        _latest_frame = next_frame(_state)
+        await asyncio.sleep(max(0, SAMPLE_S - (time.monotonic() - tick)))
 
+
+async def stream(websocket):
+    print(f"[MindLink] client connected: {websocket.remote_address}")
     try:
         while True:
-            tick  = time.monotonic()
-            frame = next_frame(state)
-            _latest_frame.update(frame)        # keep HTTP /frame current
-            await websocket.send(json.dumps(frame))
-            elapsed = time.monotonic() - tick
-            await asyncio.sleep(max(0, SAMPLE_S - elapsed))
+            tick = time.monotonic()
+            await websocket.send(json.dumps(_latest_frame))
+            await asyncio.sleep(max(0, SAMPLE_S - (time.monotonic() - tick)))
     except websockets.ConnectionClosed:
         print(f"[MindLink] client disconnected")
 
@@ -144,6 +149,8 @@ async def main(host: str, ws_port: int):
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, host, ws_port + 1).start()
+
+    asyncio.create_task(sample_loop())   # start sampling immediately
 
     # ── WebSocket server ────────────────────────────────────────────────────
     async with websockets.serve(stream, host, ws_port):

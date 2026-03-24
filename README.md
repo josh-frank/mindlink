@@ -4,7 +4,7 @@
 
 ### Setup & install
 ```
-# on a freshly flashed Pi, from ~/
+# on a fresh-baked RaspberryPi, from ~/
 apt install git python3-pip
 
 apt-get install i2c-tools
@@ -16,6 +16,13 @@ cd mindlink
 cp .env.example .env
 nano .env                     # set PASSPHRASE at minimum
 MINDLINK_USER=<…> PASSPHRASE=<…> sudo bash setup.sh
+
+# after reboot, connect via WiFi with SSID from .env
+┌──────────────────────────────────────────┐
+│  Stream : ws://192.168.4.1:5000          │
+│  HTTP   : http://192.168.4.1:5001/frame  │
+│           http://192.168.4.1:5001/info   │
+└──────────────────────────────────────────┘
 ```
 
 ### Upcoming features
