@@ -122,6 +122,9 @@ nmcli connection add \
     ipv4.method shared \
     ipv4.addresses "${HOTSPOT_IP}/24"
 
+nmcli connection modify "$CON_NAME" autoconnect yes
+nmcli connection modify "$CON_NAME" autoconnect-priority 100
+
 success "NM connection '$CON_NAME' written (will activate on reboot)"
 
 # Prevent any existing client (station) connections from fighting the AP on boot.
@@ -132,8 +135,20 @@ while IFS= read -r con; do
     [[ "$con" == "$CON_NAME" ]] && continue
     nmcli connection modify "$con" autoconnect no 2>/dev/null \
         && info "Disabled autoconnect: $con" || true
+    # Also write directly to the keyfile in case NM ignores the modify
+    # (netplan-managed connections are sometimes protected from nmcli writes)
+    KEYFILE=$(nmcli -t -f connection.id,connection.filename connection show "$con" \
+        | awk -F: '/connection.filename/{print $2}')
+    if [[ -n "$KEYFILE" && -f "$KEYFILE" ]]; then
+        sed -i 's/^autoconnect=.*/autoconnect=false/' "$KEYFILE" 2>/dev/null \
+            || true
+        grep -q "^autoconnect=" "$KEYFILE" \
+            || echo "autoconnect=false" >> "$KEYFILE"
+        info "Patched keyfile directly: $KEYFILE"
+    fi
 done < <(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="wifi"{print $1}')
-success "Existing WiFi client connections will not compete with hotspot on boot"
+# Reload so NM picks up the keyfile changes
+nmcli connection reload
 
 # =============================================================================
 section "Installing mindlink.service"
@@ -142,8 +157,8 @@ section "Installing mindlink.service"
 cat > /etc/systemd/system/mindlink.service <<EOF
 [Unit]
 Description=MindLink GSR WebSocket server
-After=network-online.target NetworkManager-wait-online.service
-Wants=network-online.target
+After=NetworkManager.service
+Wants=NetworkManager.service
 
 [Service]
 Type=simple
