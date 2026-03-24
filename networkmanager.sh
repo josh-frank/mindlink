@@ -123,7 +123,7 @@ nmcli connection add \
     ipv4.addresses "${HOTSPOT_IP}/24"
 
 nmcli connection modify "$CON_NAME" autoconnect yes
-nmcli connection modify "$CON_NAME" autoconnect-priority 100
+nmcli connection modify "$CON_NAME" connection.autoconnect-priority 100
 
 success "NM connection '$CON_NAME' written (will activate on reboot)"
 
