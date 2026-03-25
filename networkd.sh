@@ -82,7 +82,7 @@ section "Installing packages"
 # systemd-networkd handles the static IP on wlan0.
 # rfkill unblocks the radio if soft-blocked on first boot.
 apt-get update -qq
-apt-get install -y hostapd dnsmasq python3-websockets python3-aiohttp i2c-tools rfkill
+apt-get install -y hostapd dnsmasq python3-websockets python3-aiohttp python3-yaml i2c-tools rfkill
 
 # --break-system-packages needed on Jammy+ where pip is externally managed
 PIP_FLAGS=""
@@ -176,12 +176,6 @@ if [[ $PATCHED -eq 1 ]]; then
 else
     info "No netplan yaml referenced $IFACE — nothing to patch"
 fi
-
-# python3-yaml may not be installed on a minimal image
-python3 -c "import yaml" 2>/dev/null || {
-    warn "python3-yaml not available — installing"
-    apt-get install -y python3-yaml
-}
 
 # =============================================================================
 section "Writing systemd-networkd static IP for $IFACE"
