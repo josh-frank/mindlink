@@ -75,6 +75,31 @@ info "User      : $MINDLINK_USER"
 info "MindLink  : $MINDLINK_DIR"
 
 # =============================================================================
+section "Neutering wpa_supplicant BEFORE package install"
+# =============================================================================
+# Do this first — before apt touches anything — so wpa_supplicant can't race
+# hostapd on the very first reboot.  Mask (not just disable) so systemd
+# ignores the unit entirely, even if another package tries to re-enable it.
+
+systemctl stop    wpa_supplicant                   2>/dev/null || true
+systemctl stop    "wpa_supplicant@${IFACE}"        2>/dev/null || true
+systemctl disable wpa_supplicant                   2>/dev/null || true
+systemctl disable "wpa_supplicant@${IFACE}"        2>/dev/null || true
+systemctl mask    wpa_supplicant                   2>/dev/null || true
+systemctl mask    "wpa_supplicant@${IFACE}"        2>/dev/null || true
+
+WPA_CONF=/etc/wpa_supplicant/wpa_supplicant.conf
+if [[ -f "$WPA_CONF" ]]; then
+    cp "$WPA_CONF" "${WPA_CONF}.bak"
+    printf 'ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\nupdate_config=1\n' \
+        > "$WPA_CONF"
+    info "wpa_supplicant.conf neutralised (backup at ${WPA_CONF}.bak)"
+else
+    info "No wpa_supplicant.conf found — nothing to neutralise"
+fi
+success "wpa_supplicant masked"
+
+# =============================================================================
 section "Installing packages"
 # =============================================================================
 
@@ -82,23 +107,28 @@ section "Installing packages"
 # systemd-networkd handles the static IP on wlan0.
 # rfkill unblocks the radio if soft-blocked on first boot.
 
-# Pre-unmask hostapd before apt — on some images the postinstall tries to start
-# it, fails (wlan0 busy), and masks the unit.  Unmasking first makes the
-# postinstall a no-op rather than a mask operation.
+# PRE-UNMASK hostapd before apt-get update (not just before install).
+# On some Ubuntu images the apt postinstall for hostapd tries to start it,
+# finds wlan0 busy/unconfigured, fails, and re-masks the unit.  Unmasking
+# before apt means any postinstall start-attempt is a no-op (unit is unmasked
+# but not yet enabled) rather than resulting in a mask operation.
 systemctl unmask hostapd 2>/dev/null || true
 
 # systemd-resolved listens on port 53 and will cause dnsmasq to fail on
 # install.  Disable it now so apt's postinstall can start dnsmasq cleanly.
-# We replace it with dnsmasq for DNS on this device.
 systemctl disable --now systemd-resolved 2>/dev/null || true
-# Remove the stub resolv.conf symlink so dnsmasq can write its own
 rm -f /etc/resolv.conf
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 
-apt-get update -qq
-apt-get install -y hostapd dnsmasq python3-websockets python3-aiohttp python3-yaml i2c-tools rfkill
+# DEBIAN_FRONTEND=noninteractive suppresses any postinstall prompts or
+# service-management dialogs that could interfere.
+DEBIAN_FRONTEND=noninteractive apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    hostapd dnsmasq \
+    python3-websockets python3-aiohttp python3-yaml \
+    i2c-tools rfkill
 
-# Unmask again in case the postinstall masked hostapd anyway
+# Unmask again — belt-and-suspenders in case the postinstall re-masked it.
 systemctl unmask hostapd 2>/dev/null || true
 
 # --break-system-packages needed on Jammy+ where pip is externally managed
@@ -118,7 +148,8 @@ rfkill unblock wifi
 cat > /etc/systemd/system/rfkill-unblock-wifi.service <<EOF
 [Unit]
 Description=Unblock WiFi rfkill on boot
-Before=hostapd.service
+# Must run before hostapd tries to claim the radio
+Before=hostapd.service wpa_supplicant.service
 
 [Service]
 Type=oneshot
@@ -136,8 +167,6 @@ success "WiFi rfkill unblocked and persisted"
 section "Enabling I2C and checking Grove HAT"
 # =============================================================================
 
-# raspi-config is only available on Raspberry Pi OS.  On Ubuntu the boot
-# config lives at /boot/firmware/config.txt (newer) or /boot/config.txt.
 if command -v raspi-config &>/dev/null; then
     raspi-config nonint do_i2c 0
 else
@@ -167,10 +196,8 @@ fi
 section "Disabling netplan management of wlan0"
 # =============================================================================
 
-# Netplan regenerates its config files on every boot from /etc/netplan/*.yaml.
-# If we leave the existing wifi yaml in place, it will overwrite our hostapd
-# and networkd configs on reboot.  We back up all netplan yamls that reference
-# wlan0 and rewrite them to exclude it, then regenerate.
+# Netplan regenerates networkd config files on every boot from /etc/netplan/*.yaml.
+# Patch out any reference to $IFACE so it stops regenerating client configs.
 
 NETPLAN_DIR="/etc/netplan"
 PATCHED=0
@@ -180,8 +207,6 @@ for yaml in "$NETPLAN_DIR"/*.yaml "$NETPLAN_DIR"/*.yml; do
     if grep -q "$IFACE" "$yaml" 2>/dev/null; then
         cp "$yaml" "${yaml}.bak"
         info "Backed up: $yaml → ${yaml}.bak"
-        # Remove the wifis: block that references our interface.
-        # Use python3 for reliable YAML surgery — sed is too fragile here.
         python3 - "$yaml" "$IFACE" <<'PYEOF'
 import sys, yaml as _yaml
 
@@ -204,8 +229,6 @@ PYEOF
 done
 
 if [[ $PATCHED -eq 1 ]]; then
-    # Re-apply netplan so networkd picks up the change before we write our own
-    # networkd config.  --debug shows us if anything goes wrong.
     netplan generate 2>&1 | sed 's/^/  [netplan] /' || true
     success "Netplan regenerated without $IFACE"
 else
@@ -216,9 +239,10 @@ fi
 section "Writing systemd-networkd static IP for $IFACE"
 # =============================================================================
 
-# systemd-networkd matches this file to wlan0 and assigns the static IP.
-# ConfigureWithoutCarrier=yes means it sets up the IP even before hostapd
+# ConfigureWithoutCarrier=yes: networkd assigns the IP even before hostapd
 # has brought the radio up, avoiding a startup race.
+# KeepConfiguration=static: networkd does not tear down the address if the
+# link disappears briefly (e.g. during hostapd restart).
 cat > /etc/systemd/network/10-mindlink-ap.network <<EOF
 [Match]
 Name=${IFACE}
@@ -226,37 +250,16 @@ Name=${IFACE}
 [Network]
 Address=${HOTSPOT_IP}/24
 ConfigureWithoutCarrier=yes
+
+[Link]
+KeepConfiguration=static
 EOF
 
 success "networkd static IP written"
 
 # =============================================================================
-section "Neutralising wpa_supplicant client config"
-# =============================================================================
-
-WPA_CONF=/etc/wpa_supplicant/wpa_supplicant.conf
-if [[ -f "$WPA_CONF" ]]; then
-    cp "$WPA_CONF" "${WPA_CONF}.bak"
-    # Strip all network={} blocks so wpa_supplicant doesn't try to join any AP
-    printf 'ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\nupdate_config=1\n' \
-        > "$WPA_CONF"
-    info "wpa_supplicant.conf neutralised (backup at ${WPA_CONF}.bak)"
-else
-    info "No wpa_supplicant.conf found — nothing to neutralise"
-fi
-
-# Disable wpa_supplicant on wlan0 so it doesn't fight hostapd for the radio
-systemctl disable wpa_supplicant 2>/dev/null || true
-# The per-interface instance unit (if present)
-systemctl disable "wpa_supplicant@${IFACE}" 2>/dev/null || true
-success "wpa_supplicant disabled"
-
-# =============================================================================
 section "Configuring hostapd"
 # =============================================================================
-
-# Pre-unmask in case a previous failed apt postinstall masked it
-systemctl unmask hostapd 2>/dev/null || true
 
 cat > /etc/hostapd/hostapd.conf <<EOF
 interface=${IFACE}
@@ -276,11 +279,14 @@ wmm_enabled=1
 ignore_broadcast_ssid=0
 EOF
 
+# Point /etc/default/hostapd at our config file (needed on Debian-family images
+# that ship with DAEMON_CONF commented out).
 sed -i 's|^#\?DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' \
     /etc/default/hostapd 2>/dev/null || true
 
-systemctl unmask hostapd
-success "hostapd configured"
+# Final unmask — do this AFTER writing the config so the unit is fully ready.
+systemctl unmask hostapd 2>/dev/null || true
+success "hostapd configured and unmasked"
 
 # =============================================================================
 section "Configuring dnsmasq"
@@ -303,7 +309,9 @@ success "dnsmasq configured"
 section "Fixing dnsmasq startup ordering"
 # =============================================================================
 
-# dnsmasq must start after hostapd so wlan0 is already up when it binds
+# dnsmasq must start after hostapd has brought wlan0 up as an AP, otherwise
+# it tries to bind to 192.168.4.1 on an interface that doesn't have that IP
+# yet and fails with "unknown interface".
 mkdir -p /etc/systemd/system/dnsmasq.service.d
 cat > /etc/systemd/system/dnsmasq.service.d/wait-for-hostapd.conf <<EOF
 [Unit]
@@ -334,9 +342,41 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+# =============================================================================
+section "Installing hostapd-watchdog (catches silent AP failures)"
+# =============================================================================
+
+# On Ubuntu/networkd, hostapd occasionally starts before the nl80211 driver is
+# fully ready and exits 0 without actually bringing up the AP.  This lightweight
+# watchdog fires 15 s after hostapd starts and restarts it if wlan0 is not in
+# AP mode (IFF operstate UP with a BSS).  One retry is usually enough.
+cat > /etc/systemd/system/hostapd-watchdog.service <<EOF
+[Unit]
+Description=Restart hostapd if AP mode not established
+After=hostapd.service
+Requires=hostapd.service
+
+[Service]
+Type=oneshot
+# Wait 15 s for hostapd to fully initialise, then check AP mode
+ExecStartPre=/bin/sleep 15
+ExecStart=/bin/bash -c '
+    if ! iw dev ${IFACE} info 2>/dev/null | grep -q "type AP"; then
+        echo "hostapd-watchdog: AP mode not active — restarting hostapd" | systemd-cat -t hostapd-watchdog
+        systemctl restart hostapd
+    else
+        echo "hostapd-watchdog: AP mode confirmed on ${IFACE}" | systemd-cat -t hostapd-watchdog
+    fi
+'
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload
-systemctl enable hostapd dnsmasq mindlink
-success "hostapd, dnsmasq, mindlink enabled"
+systemctl enable hostapd dnsmasq mindlink hostapd-watchdog
+success "hostapd, dnsmasq, mindlink, hostapd-watchdog enabled"
 
 # =============================================================================
 section "Ready — reboot to apply"
@@ -360,6 +400,7 @@ echo -e "After reboot, connect to Wi-Fi SSID ${BOLD}${SSID}${RESET} and verify:"
 echo -e "  ws stream : ${CYAN}ws://${HOTSPOT_IP}:5000${RESET}"
 echo -e "  http feed : ${CYAN}http://${HOTSPOT_IP}:5001${RESET}"
 echo -e "  service   : ${CYAN}journalctl -u mindlink -f${RESET}"
+echo -e "  watchdog  : ${CYAN}journalctl -t hostapd-watchdog${RESET}"
 echo ""
 
 read -r -p "Reboot now? [y/N] " REPLY
