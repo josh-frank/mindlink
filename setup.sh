@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  setup.sh — MindLink auto-detector
-#  Sniffs whether this Pi uses NetworkManager or dhcpcd and delegates to the
-#  appropriate setup script.  Both scripts live alongside this one.
+#  Sniffs whether this Pi uses NetworkManager, dhcpcd, or systemd-networkd
+#  and delegates to the appropriate setup script.
 #
 #  Usage:
 #    sudo bash setup.sh [--dry-run]
@@ -32,34 +32,39 @@ DRY_RUN=0
 section "Detecting network manager"
 # =============================================================================
 
-# Strategy: prefer whichever manager is *active*.  If both are somehow active
-# (misconfigured Pi), NetworkManager wins because it's harder to evict safely.
+# Strategy: prefer whichever manager is *active*.  If multiple are somehow
+# active (misconfigured Pi), NetworkManager > dhcpcd > networkd.
 NM_ACTIVE=0
 DHCPCD_ACTIVE=0
+NETWORKD_ACTIVE=0
 
-systemctl is-active --quiet NetworkManager 2>/dev/null && NM_ACTIVE=1    || true
-systemctl is-active --quiet dhcpcd        2>/dev/null && DHCPCD_ACTIVE=1 || true
+systemctl is-active --quiet NetworkManager    2>/dev/null && NM_ACTIVE=1       || true
+systemctl is-active --quiet dhcpcd            2>/dev/null && DHCPCD_ACTIVE=1   || true
+systemctl is-active --quiet systemd-networkd  2>/dev/null && NETWORKD_ACTIVE=1 || true
 
 # Also check if binaries are installed, even if services aren't running yet
 NM_INSTALLED=0
 DHCPCD_INSTALLED=0
-command -v nmcli    &>/dev/null && NM_INSTALLED=1
-command -v dhcpcd   &>/dev/null && DHCPCD_INSTALLED=1
+command -v nmcli  &>/dev/null && NM_INSTALLED=1
+command -v dhcpcd &>/dev/null && DHCPCD_INSTALLED=1
 
-if   [[ $NM_ACTIVE     -eq 1 ]]; then
+if   [[ $NM_ACTIVE       -eq 1 ]]; then
     BACKEND="networkmanager"
     info "Detected: NetworkManager (active service)"
-elif [[ $DHCPCD_ACTIVE  -eq 1 ]]; then
+elif [[ $DHCPCD_ACTIVE   -eq 1 ]]; then
     BACKEND="dhcpcd"
     info "Detected: dhcpcd (active service)"
-elif [[ $NM_INSTALLED   -eq 1 ]]; then
+elif [[ $NETWORKD_ACTIVE -eq 1 ]]; then
+    BACKEND="networkd"
+    info "Detected: systemd-networkd (active service)"
+elif [[ $NM_INSTALLED    -eq 1 ]]; then
     BACKEND="networkmanager"
     warn "NetworkManager installed but not active — assuming NM backend"
 elif [[ $DHCPCD_INSTALLED -eq 1 ]]; then
     BACKEND="dhcpcd"
     warn "dhcpcd installed but not active — assuming dhcpcd backend"
 else
-    error "Could not detect a network manager (tried NetworkManager, dhcpcd). Install one first."
+    error "Could not detect a network manager (tried NetworkManager, dhcpcd, systemd-networkd)."
 fi
 
 # =============================================================================
@@ -74,6 +79,10 @@ case "$BACKEND" in
     dhcpcd)
         TARGET="$SCRIPT_DIR/dhcpcd.sh"
         [[ -f "$TARGET" ]] || error "dhcpcd.sh not found in $SCRIPT_DIR"
+        ;;
+    networkd)
+        TARGET="$SCRIPT_DIR/networkd.sh"
+        [[ -f "$TARGET" ]] || error "networkd.sh not found in $SCRIPT_DIR"
         ;;
 esac
 

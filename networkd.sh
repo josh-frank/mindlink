@@ -1,0 +1,342 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  networkd.sh — MindLink hotspot via systemd-networkd + hostapd + dnsmasq
+#
+#  Targets Ubuntu Jammy (and similar) which use systemd-networkd + wpa_supplicant
+#  + netplan, with no NetworkManager.
+#
+#  Unlike the NM path, systemd-networkd does not drive the AP radio or run a
+#  DHCP server itself — so we use hostapd for the radio and dnsmasq for DHCP,
+#  same as the dhcpcd path.  Netplan is disabled for wlan0 so it stops
+#  regenerating client configs on every boot.
+#
+#  Nothing is started live — the Pi comes up cleanly on next boot.
+#  Safe to run over wlan0 SSH: your session stays up for the whole script.
+#
+#  Usage:
+#    cp .env.example .env && nano .env
+#    sudo bash networkd.sh
+# =============================================================================
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+    set -a && source "$SCRIPT_DIR/.env" && set +a
+fi
+
+# ── Colour helpers ────────────────────────────────────────────────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+
+info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
+success() { echo -e "${GREEN}[OK]${RESET}    $*"; }
+warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
+error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; exit 1; }
+section() { echo -e "\n${BOLD}${CYAN}── $* ──${RESET}"; }
+
+[[ $EUID -eq 0 ]] || error "Please run as root:  sudo bash networkd.sh"
+
+# =============================================================================
+#  CONFIGURATION  (override via .env or environment)
+# =============================================================================
+SSID="${SSID:-MindLink}"
+PASSPHRASE="${PASSPHRASE:-}"
+IFACE="${IFACE:-wlan0}"
+HOTSPOT_IP="192.168.4.1"
+DHCP_START="192.168.4.2"
+DHCP_END="192.168.4.20"
+DHCP_LEASE="24h"
+CHANNEL="${CHANNEL:-6}"
+MINDLINK_DIR="${MINDLINK_DIR:-/home/${SUDO_USER:-pi}/mindlink}"
+MINDLINK_USER="${MINDLINK_USER:-${SUDO_USER:-pi}}"
+# =============================================================================
+
+# =============================================================================
+section "Preflight checks"
+# =============================================================================
+
+[[ -n "$PASSPHRASE" ]] \
+    || error "PASSPHRASE is not set.  Edit .env or export PASSPHRASE= before running."
+[[ ${#PASSPHRASE} -ge 8 ]] \
+    || error "PASSPHRASE must be at least 8 characters."
+[[ -f "$MINDLINK_DIR/mindlink.py" ]] \
+    || error "mindlink.py not found at $MINDLINK_DIR — set MINDLINK_DIR= to override."
+ip link show "$IFACE" &>/dev/null \
+    || error "Interface '$IFACE' not found.  Is the Wi-Fi adapter present?"
+systemctl is-active --quiet systemd-networkd \
+    || error "systemd-networkd is not running."
+
+DEVICE_ID=$(grep "^Serial" /proc/cpuinfo | awk '{print $3}' || echo "unknown")
+info "Device    : $DEVICE_ID"
+info "Interface : $IFACE"
+info "SSID      : $SSID"
+info "Hotspot IP: $HOTSPOT_IP"
+info "User      : $MINDLINK_USER"
+info "MindLink  : $MINDLINK_DIR"
+
+# =============================================================================
+section "Installing packages"
+# =============================================================================
+
+# hostapd drives the AP radio; dnsmasq serves DHCP to clients.
+# systemd-networkd handles the static IP on wlan0.
+# rfkill unblocks the radio if soft-blocked on first boot.
+apt-get update -qq
+apt-get install -y hostapd dnsmasq python3-websockets python3-aiohttp i2c-tools rfkill
+
+# --break-system-packages needed on Jammy+ where pip is externally managed
+PIP_FLAGS=""
+pip3 install --help 2>&1 | grep -q -- "--break-system-packages" \
+    && PIP_FLAGS="--break-system-packages"
+
+pip3 install grove.py $PIP_FLAGS --quiet
+sudo -u "$MINDLINK_USER" pip3 install grove.py $PIP_FLAGS --quiet
+success "Packages installed"
+
+# =============================================================================
+section "Unblocking WiFi radio"
+# =============================================================================
+
+rfkill unblock wifi
+cat > /etc/systemd/system/rfkill-unblock-wifi.service <<EOF
+[Unit]
+Description=Unblock WiFi rfkill on boot
+Before=hostapd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/rfkill unblock wifi
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable rfkill-unblock-wifi
+success "WiFi rfkill unblocked and persisted"
+
+# =============================================================================
+section "Enabling I2C and checking Grove HAT"
+# =============================================================================
+
+raspi-config nonint do_i2c 0
+success "I2C enabled"
+
+if i2cdetect -y -a 1 | grep -q "04"; then
+    success "Grove HAT detected at 0x04"
+else
+    warn "Grove HAT not detected — check later with: i2cdetect -y -a 1"
+fi
+
+# =============================================================================
+section "Disabling netplan management of wlan0"
+# =============================================================================
+
+# Netplan regenerates its config files on every boot from /etc/netplan/*.yaml.
+# If we leave the existing wifi yaml in place, it will overwrite our hostapd
+# and networkd configs on reboot.  We back up all netplan yamls that reference
+# wlan0 and rewrite them to exclude it, then regenerate.
+
+NETPLAN_DIR="/etc/netplan"
+PATCHED=0
+
+for yaml in "$NETPLAN_DIR"/*.yaml "$NETPLAN_DIR"/*.yml; do
+    [[ -f "$yaml" ]] || continue
+    if grep -q "$IFACE" "$yaml" 2>/dev/null; then
+        cp "$yaml" "${yaml}.bak"
+        info "Backed up: $yaml → ${yaml}.bak"
+        # Remove the wifis: block that references our interface.
+        # Use python3 for reliable YAML surgery — sed is too fragile here.
+        python3 - "$yaml" "$IFACE" <<'PYEOF'
+import sys, yaml as _yaml
+
+path, iface = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    doc = _yaml.safe_load(f) or {}
+
+wifis = doc.get("network", {}).get("wifis", {})
+if iface in wifis:
+    del wifis[iface]
+if not wifis:
+    doc.get("network", {}).pop("wifis", None)
+
+with open(path, "w") as f:
+    _yaml.dump(doc, f, default_flow_style=False)
+PYEOF
+        PATCHED=1
+        info "Removed $IFACE from netplan yaml: $yaml"
+    fi
+done
+
+if [[ $PATCHED -eq 1 ]]; then
+    # Re-apply netplan so networkd picks up the change before we write our own
+    # networkd config.  --debug shows us if anything goes wrong.
+    netplan generate 2>&1 | sed 's/^/  [netplan] /' || true
+    success "Netplan regenerated without $IFACE"
+else
+    info "No netplan yaml referenced $IFACE — nothing to patch"
+fi
+
+# python3-yaml may not be installed on a minimal image
+python3 -c "import yaml" 2>/dev/null || {
+    warn "python3-yaml not available — installing"
+    apt-get install -y python3-yaml
+}
+
+# =============================================================================
+section "Writing systemd-networkd static IP for $IFACE"
+# =============================================================================
+
+# systemd-networkd matches this file to wlan0 and assigns the static IP.
+# ConfigureWithoutCarrier=yes means it sets up the IP even before hostapd
+# has brought the radio up, avoiding a startup race.
+cat > /etc/systemd/network/10-mindlink-ap.network <<EOF
+[Match]
+Name=${IFACE}
+
+[Network]
+Address=${HOTSPOT_IP}/24
+ConfigureWithoutCarrier=yes
+EOF
+
+success "networkd static IP written"
+
+# =============================================================================
+section "Neutralising wpa_supplicant client config"
+# =============================================================================
+
+WPA_CONF=/etc/wpa_supplicant/wpa_supplicant.conf
+if [[ -f "$WPA_CONF" ]]; then
+    cp "$WPA_CONF" "${WPA_CONF}.bak"
+    # Strip all network={} blocks so wpa_supplicant doesn't try to join any AP
+    printf 'ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\nupdate_config=1\n' \
+        > "$WPA_CONF"
+    info "wpa_supplicant.conf neutralised (backup at ${WPA_CONF}.bak)"
+else
+    info "No wpa_supplicant.conf found — nothing to neutralise"
+fi
+
+# Disable wpa_supplicant on wlan0 so it doesn't fight hostapd for the radio
+systemctl disable wpa_supplicant 2>/dev/null || true
+# The per-interface instance unit (if present)
+systemctl disable "wpa_supplicant@${IFACE}" 2>/dev/null || true
+success "wpa_supplicant disabled"
+
+# =============================================================================
+section "Configuring hostapd"
+# =============================================================================
+
+# Pre-unmask in case a previous failed apt postinstall masked it
+systemctl unmask hostapd 2>/dev/null || true
+
+cat > /etc/hostapd/hostapd.conf <<EOF
+interface=${IFACE}
+driver=nl80211
+ssid=${SSID}
+country_code=US
+hw_mode=g
+channel=${CHANNEL}
+ieee80211n=1
+ht_capab=[HT20][SHORT-GI-20]
+auth_algs=1
+wpa=2
+wpa_passphrase=${PASSPHRASE}
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+wmm_enabled=1
+ignore_broadcast_ssid=0
+EOF
+
+sed -i 's|^#\?DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' \
+    /etc/default/hostapd 2>/dev/null || true
+
+systemctl unmask hostapd
+success "hostapd configured"
+
+# =============================================================================
+section "Configuring dnsmasq"
+# =============================================================================
+
+[[ -f /etc/dnsmasq.conf.bak ]] || cp /etc/dnsmasq.conf /etc/dnsmasq.conf.bak
+
+cat > /etc/dnsmasq.conf <<EOF
+interface=${IFACE}
+bind-interfaces
+server=8.8.8.8
+domain-needed
+bogus-priv
+dhcp-range=${DHCP_START},${DHCP_END},${DHCP_LEASE}
+EOF
+
+success "dnsmasq configured"
+
+# =============================================================================
+section "Fixing dnsmasq startup ordering"
+# =============================================================================
+
+# dnsmasq must start after hostapd so wlan0 is already up when it binds
+mkdir -p /etc/systemd/system/dnsmasq.service.d
+cat > /etc/systemd/system/dnsmasq.service.d/wait-for-hostapd.conf <<EOF
+[Unit]
+After=hostapd.service
+Wants=hostapd.service
+EOF
+
+success "dnsmasq ordering drop-in written"
+
+# =============================================================================
+section "Installing mindlink.service"
+# =============================================================================
+
+cat > /etc/systemd/system/mindlink.service <<EOF
+[Unit]
+Description=MindLink GSR WebSocket server
+After=hostapd.service dnsmasq.service
+
+[Service]
+Type=simple
+User=${MINDLINK_USER}
+WorkingDirectory=${MINDLINK_DIR}
+ExecStart=/usr/bin/python3 ${MINDLINK_DIR}/mindlink.py 0.0.0.0:5000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable hostapd dnsmasq mindlink
+success "hostapd, dnsmasq, mindlink enabled"
+
+# =============================================================================
+section "Ready — reboot to apply"
+# =============================================================================
+
+PAD=41
+print_row() { printf "│ %-${PAD}s │\n" "$1"; }
+
+echo ""
+echo -e "${GREEN}${BOLD}┌$(printf '─%.0s' $(seq 1 $((PAD+2))))┐${RESET}"
+print_row "All configs written, services enabled"
+print_row ""
+print_row "  Device : ${DEVICE_ID}"
+print_row "  User   : ${MINDLINK_USER}"
+print_row "  SSID   : ${SSID}"
+print_row "  Stream : ws://${HOTSPOT_IP}:5000"
+print_row "  HTTP   : http://${HOTSPOT_IP}:5001"
+echo -e "${GREEN}${BOLD}└$(printf '─%.0s' $(seq 1 $((PAD+2))))┘${RESET}"
+echo ""
+echo -e "After reboot, connect to Wi-Fi SSID ${BOLD}${SSID}${RESET} and verify:"
+echo -e "  ws stream : ${CYAN}ws://${HOTSPOT_IP}:5000${RESET}"
+echo -e "  http feed : ${CYAN}http://${HOTSPOT_IP}:5001${RESET}"
+echo -e "  service   : ${CYAN}journalctl -u mindlink -f${RESET}"
+echo ""
+
+read -r -p "Reboot now? [y/N] " REPLY
+if [[ "${REPLY,,}" == "y" ]]; then
+    info "Rebooting..."
+    reboot
+else
+    warn "Skipping reboot — run 'sudo reboot' when ready."
+fi
