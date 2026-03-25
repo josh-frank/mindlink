@@ -81,8 +81,25 @@ section "Installing packages"
 # hostapd drives the AP radio; dnsmasq serves DHCP to clients.
 # systemd-networkd handles the static IP on wlan0.
 # rfkill unblocks the radio if soft-blocked on first boot.
+
+# Pre-unmask hostapd before apt — on some images the postinstall tries to start
+# it, fails (wlan0 busy), and masks the unit.  Unmasking first makes the
+# postinstall a no-op rather than a mask operation.
+systemctl unmask hostapd 2>/dev/null || true
+
+# systemd-resolved listens on port 53 and will cause dnsmasq to fail on
+# install.  Disable it now so apt's postinstall can start dnsmasq cleanly.
+# We replace it with dnsmasq for DNS on this device.
+systemctl disable --now systemd-resolved 2>/dev/null || true
+# Remove the stub resolv.conf symlink so dnsmasq can write its own
+rm -f /etc/resolv.conf
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+
 apt-get update -qq
 apt-get install -y hostapd dnsmasq python3-websockets python3-aiohttp python3-yaml i2c-tools rfkill
+
+# Unmask again in case the postinstall masked hostapd anyway
+systemctl unmask hostapd 2>/dev/null || true
 
 # --break-system-packages needed on Jammy+ where pip is externally managed
 PIP_FLAGS=""
@@ -119,7 +136,25 @@ success "WiFi rfkill unblocked and persisted"
 section "Enabling I2C and checking Grove HAT"
 # =============================================================================
 
-raspi-config nonint do_i2c 0
+# raspi-config is only available on Raspberry Pi OS.  On Ubuntu the boot
+# config lives at /boot/firmware/config.txt (newer) or /boot/config.txt.
+if command -v raspi-config &>/dev/null; then
+    raspi-config nonint do_i2c 0
+else
+    BOOT_CONFIG=""
+    [[ -f /boot/firmware/config.txt ]] && BOOT_CONFIG=/boot/firmware/config.txt
+    [[ -z "$BOOT_CONFIG" && -f /boot/config.txt ]] && BOOT_CONFIG=/boot/config.txt
+    if [[ -n "$BOOT_CONFIG" ]]; then
+        if grep -q "^dtparam=i2c_arm=" "$BOOT_CONFIG"; then
+            sed -i 's/^dtparam=i2c_arm=.*/dtparam=i2c_arm=on/' "$BOOT_CONFIG"
+        else
+            echo "dtparam=i2c_arm=on" >> "$BOOT_CONFIG"
+        fi
+        info "I2C enabled via $BOOT_CONFIG"
+    else
+        warn "Could not find boot config — enable I2C manually: add 'dtparam=i2c_arm=on' to your boot config"
+    fi
+fi
 success "I2C enabled"
 
 if i2cdetect -y -a 1 | grep -q "04"; then
