@@ -13,6 +13,7 @@ import json
 import time
 import asyncio
 import websockets
+import aiohttp_cors
 from aiohttp import web
 
 # ── device ID ──────────────────────────────────────────────────────────────
@@ -144,8 +145,16 @@ async def main(host: str, ws_port: int):
 
     # ── HTTP server on ws_port+1 ────────────────────────────────────────────
     app = web.Application()
-    app.router.add_get("/info",  handle_info)
-    app.router.add_get("/frame", handle_frame)
+    cors = aiohttp_cors.setup(app, defaults={
+        "*": aiohttp_cors.ResourceOptions(  # allow all origins
+            # allow_credentials=True,       # technically spec-invalid for '*'
+            expose_headers="*",
+            allow_headers="*",
+            allow_methods=["GET"],
+        )
+    })
+    cors.add(app.router.add_get("/info",  handle_info))
+    cors.add(app.router.add_get("/frame", handle_frame))
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, host, ws_port + 1).start()
