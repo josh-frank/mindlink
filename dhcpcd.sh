@@ -111,8 +111,8 @@ apt-get install -y hostapd dnsmasq dhcpcd5 python3-websockets python3-aiohttp i2
 
 # Always unmask after apt in case the postinstall masked it anyway.
 systemctl unmask hostapd
-pip3 install grove.py $PIP_FLAGS --quiet
-sudo -u "$MINDLINK_USER" pip3 install grove.py $PIP_FLAGS --quiet
+pip3 install grove.py aiohttp-cors $PIP_FLAGS --quiet
+sudo -u "$MINDLINK_USER" pip3 install grove.py aiohttp-cors $PIP_FLAGS --quiet
 success "Packages installed"
 
 # =============================================================================

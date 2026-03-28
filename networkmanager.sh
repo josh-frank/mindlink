@@ -75,9 +75,9 @@ section "Installing packages"
 apt-get update -qq
 # hostapd/dnsmasq not needed — NM drives the AP and handles DHCP natively
 apt-get install -y python3-websockets python3-aiohttp i2c-tools
-pip3 install grove.py --break-system-packages --quiet
+pip3 install grove.py aiohttp-cors --break-system-packages --quiet
 # Also install for the service user in case their env differs from root's
-sudo -u "$MINDLINK_USER" pip3 install grove.py --break-system-packages --quiet
+sudo -u "$MINDLINK_USER" pip3 install grove.py aiohttp-cors --break-system-packages --quiet
 success "Packages installed"
 
 # =============================================================================

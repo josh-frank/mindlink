@@ -136,8 +136,8 @@ PIP_FLAGS=""
 pip3 install --help 2>&1 | grep -q -- "--break-system-packages" \
     && PIP_FLAGS="--break-system-packages"
 
-pip3 install grove.py $PIP_FLAGS --quiet
-sudo -u "$MINDLINK_USER" pip3 install grove.py $PIP_FLAGS --quiet
+pip3 install grove.py aiohttp-cors $PIP_FLAGS --quiet
+sudo -u "$MINDLINK_USER" pip3 install grove.py aiohttp-cors $PIP_FLAGS --quiet
 success "Packages installed"
 
 # =============================================================================
