@@ -90,10 +90,11 @@ def next_frame(state: dict) -> dict:
 # ── shared state ───────────────────────────────────────────────────────────
 _latest_frame: dict = {}
 _state: dict = {}
+_clients: set[asyncio.Queue] = set()
 
 
 async def sample_loop():
-    """Runs forever at SAMPLE_RATE_HZ, populates _latest_frame continuously."""
+    """Runs forever at SAMPLE_RATE_HZ, populates _latest_frame and pushes to all client queues."""
     global _latest_frame
     seed = read_raw()
     _state.update({
@@ -106,19 +107,25 @@ async def sample_loop():
     })
     while True:
         tick = time.monotonic()
-        _latest_frame = next_frame(_state)
+        frame = next_frame(_state)
+        _latest_frame = frame
+        for q in _clients:
+            q.put_nowait(frame)  # non-blocking push; drops if client queue is full
         await asyncio.sleep(max(0, SAMPLE_S - (time.monotonic() - tick)))
 
 
 async def stream(websocket):
     print(f"[MindLink] client connected: {websocket.remote_address}")
+    q: asyncio.Queue = asyncio.Queue(maxsize=5)  # small buffer; slow clients drop frames
+    _clients.add(q)
     try:
         while True:
-            tick = time.monotonic()
-            await websocket.send(json.dumps(_latest_frame))
-            await asyncio.sleep(max(0, SAMPLE_S - (time.monotonic() - tick)))
+            frame = await q.get()
+            await websocket.send(json.dumps(frame))
     except websockets.ConnectionClosed:
         print(f"[MindLink] client disconnected")
+    finally:
+        _clients.discard(q)
 
 
 # ── HTTP handlers ───────────────────────────────────────────────────────────
